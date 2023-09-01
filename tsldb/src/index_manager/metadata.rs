@@ -18,12 +18,12 @@ pub struct Metadata {
   current_segment_number: AtomicCell<u32>,
 
   /// Maximum number of log messages per segment. This is only approximate and a segment can
-  /// contain more messages than this number depending on the frequecy at which commit() is called.
+  /// contain more messages than this number depending on the frequency at which commit() is called.
   #[serde(with = "atomic_cell_serde")]
   approx_max_log_message_count_per_segment: AtomicCell<u32>,
 
   /// Maximum number of data points per segment. This is only approximate and a segment can
-  /// contain more data points than this number depending on the frequecy at which commit() is called.
+  /// contain more data points than this number depending on the frequency at which commit() is called.
   #[serde(with = "atomic_cell_serde")]
   approx_max_data_point_count_per_segment: AtomicCell<u32>,
 }
@@ -33,13 +33,13 @@ impl Metadata {
   pub fn new(
     segment_count: u32,
     current_segment_number: u32,
-    max_log_messges: u32,
+    max_log_messages: u32,
     max_data_points: u32,
   ) -> Metadata {
     Metadata {
       segment_count: AtomicCell::new(segment_count),
       current_segment_number: AtomicCell::new(current_segment_number),
-      approx_max_log_message_count_per_segment: AtomicCell::new(max_log_messges),
+      approx_max_log_message_count_per_segment: AtomicCell::new(max_log_messages),
       approx_max_data_point_count_per_segment: AtomicCell::new(max_data_points),
     }
   }

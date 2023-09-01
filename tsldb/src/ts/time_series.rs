@@ -1,4 +1,6 @@
 use std::collections::BinaryHeap;
+use std::fmt::Display;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -12,13 +14,56 @@ use super::constants::BLOCK_SIZE_FOR_TIME_SERIES;
 use super::time_series_block::TimeSeriesBlock;
 use super::time_series_block_compressed::TimeSeriesBlockCompressed;
 
+#[derive(Debug, Deserialize, Serialize)]
+pub enum DuplicatePolicy {
+  /// ignore any newly reported value and reply with an error
+  Block,
+  /// ignore any newly reported value
+  First,
+  /// overwrite the existing value with the new value
+  Last,
+  /// only override if the value is lower than the existing value
+  Min,
+  /// only override if the value is higher than the existing value
+  Max,
+  /// append the new value to the existing value
+  Sum
+}
+
+impl Display for DuplicatePolicy {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      DuplicatePolicy::Block => write!(f, "block"),
+      DuplicatePolicy::First => write!(f, "first"),
+      DuplicatePolicy::Last => write!(f, "last"),
+      DuplicatePolicy::Min => write!(f, "min"),
+      DuplicatePolicy::Max => write!(f, "max"),
+      DuplicatePolicy::Sum => write!(f, "sum"),
+    }
+  }
+}
+
+impl From<&str> for DuplicatePolicy {
+  fn from(s: &str) -> Self {
+    match s.to_ascii_lowercase().as_str() {
+      "block" => DuplicatePolicy::Block,
+      "first" => DuplicatePolicy::First,
+      "last" => DuplicatePolicy::Last,
+      "min" => DuplicatePolicy::Min,
+      "max" => DuplicatePolicy::Max,
+      "sum" => DuplicatePolicy::Sum,
+      _ => panic!("invalid duplicate policy: {}", s),
+    }
+  }
+}
+
 /// Separator between the label name and label value to create a label term. For example,
 /// if the label name is 'method' and the value is 'GET',and the LABEL_SEPARATOR is '~',
 /// in the labels map this will be stored as 'method~GET'.
 const LABEL_SEPARATOR: &str = "~";
 
-/// The label for the metric name when stored in the time series. For exmaple, if the METRIC_NAME_PREFIX
-/// is '__name__', the LABEL_SEPARATOR is '~', and the matric name is 'request_count', in the labels map,
+/// The label for the metric name when stored in the time series. For example, if the METRIC_NAME_PREFIX
+/// is '__name__', the LABEL_SEPARATOR is '~', and the matrix name is 'request_count', in the labels map,
 /// this will be stored as '__name__~request_count'.
 const METRIC_NAME_PREFIX: &str = "__name__";
 
@@ -27,6 +72,14 @@ const METRIC_NAME_PREFIX: &str = "__name__";
 /// initial values in each block is also stored (also called 'skip pointer' in literature).
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TimeSeries {
+  id: u64,
+  
+  retention: Duration,
+  
+  duplicate_policy: DuplicatePolicy,
+
+  chunk_size_bytes: usize,
+  
   /// A list of compressed time series blocks.
   #[serde(with = "rwlock_serde")]
   compressed_blocks: RwLock<Vec<TimeSeriesBlockCompressed>>,
@@ -47,6 +100,10 @@ impl TimeSeries {
   /// Create a new empty time series.
   pub fn new() -> Self {
     TimeSeries {
+      id: 0,
+      retention: Default::default(),
+      duplicate_policy: DuplicatePolicy::Block,
+      chunk_size_bytes: 4096,
       compressed_blocks: RwLock::new(Vec::new()),
       last_block: RwLock::new(TimeSeriesBlock::new()),
       initial_times: RwLock::new(Vec::new()),

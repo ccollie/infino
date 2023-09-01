@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
@@ -14,8 +15,9 @@ use crate::utils::io;
 use crate::utils::serialize;
 use crate::utils::sync::thread;
 use crate::utils::sync::{Arc, Mutex};
+use roaring::{MultiOps, RoaringTreemap};
 
-/// File name where the list (ids) of all segements is stored.
+/// File name where the list (ids) of all segments is stored.
 const ALL_SEGMENTS_LIST_FILE_NAME: &str = "all_segments_list.bin";
 
 /// File name to store index metadata.
@@ -44,6 +46,11 @@ pub struct Index {
   /// Mutex for locking the directory where the index is committed / read from, so that two threads
   /// don't write the directory at the same time.
   index_dir_lock: Arc<Mutex<thread::ThreadId>>,
+
+  // todo: label_sequence, metric_sequence, timeseries_sequence
+  ts_id_name_map: HashMap<u64, String>,
+  label_to_ts_ids: HashMap<String, RoaringTreemap>,
+  timeseries_sequence: AtomicU64,
 }
 
 impl Index {
@@ -128,6 +135,9 @@ impl Index {
       all_segments_map,
       index_dir_path: index_dir.to_owned(),
       index_dir_lock,
+      ts_id_name_map: Default::default(),
+      label_to_ts_ids: Default::default(),
+      timeseries_sequence: Default::default(),
     };
 
     // Commit the empty index so that the index directory will be created.
@@ -352,6 +362,9 @@ impl Index {
       all_segments_map,
       index_dir_path: index_dir_path.to_owned(),
       index_dir_lock,
+      ts_id_name_map: Default::default(),
+      label_to_ts_ids: Default::default(),
+      timeseries_sequence: Default::default(),
     })
   }
 
@@ -390,6 +403,47 @@ impl Index {
   pub fn get_index_dir(&self) -> String {
     self.index_dir_path.to_owned()
   }
+
+  pub(crate) fn next_ts_id(&mut self) -> u64 {
+    // wee use Relaxed here since we only need uniqueness, not monotonicity
+    self.timeseries_sequence.fetch_add(1, Ordering::Relaxed)
+  }
+
+  pub(crate) fn remove_timeseries_key(&mut self, key: u64) {
+    self.ts_id_name_map.remove(&key);
+    // todo remove from labels index
+  }
+
+  pub(crate) fn index_timeseries(&mut self, key: &str, labels: &MetricName) {
+    let ts_id = self.next_ts_id();
+    self.ts_id_name_map.insert(ts_id, labels.to_string());
+    for (label_name, label_value) in labels.iter() {
+      self.index_series_id_by_label(ts_id, label_name);
+    }
+  }
+  pub(crate) fn index_series_id_by_label(&mut self, ts_id: u64, label: &str) {
+    let mut ts_by_label = self.label_to_ts_ids.entry(label.to_owned())
+        .or_insert_with(|| RoaringTreemap::new());
+    ts_by_label.insert(ts_id);
+  }
+
+  pub(crate) fn get_timeseries_ids_by_label(&self, label: &str) -> Option<&RoaringTreemap> {
+    self.label_to_ts_ids.get(label)
+  }
+
+  pub(crate) fn remove_label_from_series_index(&mut self, ts_id: u64, label: &str) {
+    if let Some(mut ts_by_label) = self.label_to_ts_ids.get_mut(label) {
+      ts_by_label.remove(ts_id);
+    }
+  }
+
+  pub(crate) fn get_series_keys_for_labels(&self, labels: &[&str]) -> impl Iterator<Item=&String> {
+    labels.iter()
+        .flat_map(|label| self.label_to_ts_ids.get(label))
+        .union()
+        .flat_map(|id| self.ts_id_name_map.get(id))
+  }
+
 }
 
 #[cfg(test)]

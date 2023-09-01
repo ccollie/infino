@@ -3,6 +3,10 @@ pub mod log;
 pub(crate) mod segment_manager;
 pub mod ts;
 pub mod utils;
+mod encoding;
+mod decimal;
+pub(crate) mod math;
+mod redis;
 
 use ::log::debug;
 use std::collections::HashMap;
@@ -12,6 +16,8 @@ use crate::log::log_message::LogMessage;
 use crate::ts::data_point::DataPoint;
 use crate::utils::config::Settings;
 use crate::utils::error::TsldbError;
+
+extern crate roaring;
 
 /// Database for storing time series (ts) and logs (l).
 pub struct Tsldb {

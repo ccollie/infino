@@ -16,7 +16,7 @@ pub struct PostingsList {
   #[serde(with = "rwlock_serde")]
   postings_list_compressed: RwLock<Vec<PostingsBlockCompressed>>,
 
-  // The last block, whish is uncompressed. Note that we only compress blocks that have 128 (i.e., BLOCK_SIZE_FOR_LOG_MESSAGES)
+  // The last block, which is uncompressed. Note that we only compress blocks that have 128 (i.e., BLOCK_SIZE_FOR_LOG_MESSAGES)
   // integers - so the last block may have upto BLOCK_SIZE_FOR_LOG_MESSAGES integers is stored in uncompressed form.
   #[serde(with = "rwlock_serde")]
   last_block: RwLock<PostingsBlock>,

@@ -6,7 +6,7 @@ pub enum TsldbError {
   #[error("Invalid size. Expected {0}, Received {1}.")]
   InvalidSize(usize, usize),
 
-  #[error("Already at full capcity. Max capacity {0}.")]
+  #[error("Already at full capacity. Max capacity {0}.")]
   CapacityFull(usize),
 
   #[error("Cannot read directory {0}.")]
@@ -26,4 +26,16 @@ pub enum TsldbError {
 
   #[error("Invalid configuration. {0}")]
   InvalidConfiguration(String),
+
+  #[error("Encoding error. {0}")]
+  EncodingError(String),
+
+  #[error("Serialization error. {0}")]
+  CannotSerialize(String),
+
+  #[error("Cannot deserialize. {0}")]
+  CannotDeserialize(String),
+
+  #[error("Cannot decompress. {0}")]
+  DecompressionFailed(String),
 }
