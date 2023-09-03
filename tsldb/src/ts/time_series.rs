@@ -79,6 +79,8 @@ pub struct TimeSeries {
   duplicate_policy: DuplicatePolicy,
 
   chunk_size_bytes: usize,
+
+  // dedupe_interval
   
   /// A list of compressed time series blocks.
   #[serde(with = "rwlock_serde")]
@@ -94,6 +96,12 @@ pub struct TimeSeries {
   /// (The additional 1 is to account for the uncompressed 'last' block)
   #[serde(with = "rwlock_serde")]
   initial_times: RwLock<Vec<u64>>,
+
+  pub total_samples: u64,
+  
+  pub last_timestamp: i64,
+
+  pub last_value: f64,
 }
 
 impl TimeSeries {
@@ -107,6 +115,9 @@ impl TimeSeries {
       compressed_blocks: RwLock::new(Vec::new()),
       last_block: RwLock::new(TimeSeriesBlock::new()),
       initial_times: RwLock::new(Vec::new()),
+      total_samples: 0,
+      last_timestamp: 0,
+      last_value: f64::NAN,
     }
   }
 
@@ -219,6 +230,10 @@ impl TimeSeries {
   /// Get the initial times, wrapped in RwLock.
   pub fn get_initial_times(&self) -> &RwLock<Vec<u64>> {
     &self.initial_times
+  }
+
+  pub fn delete_range(&mut self, start_ts: i64, end_ts: i64) {
+
   }
 }
 

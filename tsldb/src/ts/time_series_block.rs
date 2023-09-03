@@ -9,6 +9,12 @@ use crate::utils::custom_serde::rwlock_serde;
 use crate::utils::error::TsldbError;
 use crate::utils::sync::RwLock;
 
+#[derive(Debug, Debug, Clone, Deserialize, Serialize)]
+pub enum TimeseriesChunk {
+  Uncompressed(TimeSeriesBlock),
+  Compressed(TimeSeriesBlockCompressed),
+}
+
 /// Represents a time series block.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TimeSeriesBlock {
@@ -74,8 +80,8 @@ impl TimeSeriesBlock {
   /// Get the data points in the specified range (both range_start_time and range_end_time inclusive).
   pub fn get_data_points_in_range(
     &self,
-    range_start_time: u64,
-    range_end_time: u64,
+    start_time: u64,
+    end_time: u64,
   ) -> Vec<DataPoint> {
     let data_points_lock = self.data_points.read().unwrap();
     let mut retval = Vec::new();
@@ -83,7 +89,7 @@ impl TimeSeriesBlock {
     for dp in data_points_lock.as_slice() {
       let time = dp.get_time();
 
-      if time >= range_start_time && time <= range_end_time {
+      if time >= start_time && time <= end_time {
         retval.push((*dp).clone());
       }
     }
@@ -91,11 +97,28 @@ impl TimeSeriesBlock {
     retval
   }
 
+  pub fn remove_range(&mut self, start_time: u64, end_time: u64) {
+    let mut data_points_lock = self.data_points.write().unwrap();
+    data_points_lock.retain(|dp| {
+      let time = dp.get_time();
+      time < start_time || time > end_time
+    });
+  }
+
+
   /// Get the number of data points in this time series block.
   #[cfg(test)]
   pub fn len(&self) -> usize {
     let data_points_lock = self.data_points.read().unwrap();
     data_points_lock.len()
+  }
+
+  pub fn split(&mut self) -> Self {
+    let mut data_points_lock = self.data_points.write().unwrap();
+    let right = data_points_lock.split_off(data_points_lock.len() / 2);
+
+    let new_time_series_block = TimeSeriesBlock::new_with_data_points(right);
+    new_time_series_block
   }
 }
 
