@@ -13,7 +13,6 @@ use lib::{marshal_var_i64, unmarshal_var_i64};
 use crate::utils::{read_usize, write_usize};
 use crate::{MetricName, RuntimeError, RuntimeResult, Timeseries};
 
-
 pub struct DecompressorContext<'a> {
   data: &'a CompressedTimeseries,
   t_decompressor: Decompressor<i64>,
@@ -62,39 +61,6 @@ impl<'a> DecompressorContext<'a> {
     timestamps.extend(page_t);
     values.extend(page_v);
     Ok(compressed)
-  }
-
-  fn iterate_while<V: CompressedPageVisitor>(
-    &mut self,
-    start_ofs: usize,
-    visitor: &mut V,
-    once: bool,
-  ) -> Result<usize, V: Error> {
-    let mut count = 0;
-    let mut buf = self.data[start_ofs..];
-    let mut timestamps = Vec::with_capacity(DEFAULT_ITERATOR_BUF_SIZE);
-    let mut values = Vec::with_capacity(DEFAULT_ITERATOR_BUF_SIZE);
-
-    loop {
-      buf = self.get_page_data(buf, &mut timestamps, &mut values)?;
-      if self.timestamps.is_empty() {
-        return Ok(count);
-      }
-      if visitor.visit_page(&self.timestamps, &self.values, buf.is_empty())? {
-        count += self.timestamps.len();
-      } else {
-        break;
-      }
-      if buf.is_empty() || once {
-        break;
-      }
-      timestamps.clear();
-      values.clear();
-    }
-
-    visitor.post_visit()?;
-
-    Ok(count)
   }
 
   fn reset_buffers(&mut self) {
@@ -163,32 +129,42 @@ impl CompressedTimeseries {
     &self,
     start: i64,
     end: i64,
+    rev: bool,
     visitor: &mut V,
   ) -> RuntimeResult<usize> {
-    if !self.overlaps_range(start, end) {
+    // todo: fast path for single page ?
+
+    let page_idx = self
+      .pages
+      .iter()
+      .position(|page| page.t_min <= start)
+      .unwrap_or(0);
+    let end_page_idx = self
+      .pages
+      .iter()
+      .rev()
+      .position(|page| page.t_max <= end)
+      .unwrap_or(0);
+
+    if page_idx > end_page_idx {
       return Ok(0);
     }
+
     let mut context = DecompressorContext::new(&self.data);
-    let mut page_idx: usize = 0;
-    for page in self.pages {
-      if page.t_min <= start {
-        break;
-      }
-      page_idx += 1;
-    }
-    let mut pages = &self.pages[page_idx..];
+
+    let mut pages = &self.pages[page_idx..end_page_idx];
     let mut timestamps: Vec<i64> = Vec::with_capacity(DEFAULT_ITERATOR_BUF_SIZE);
     let mut values: Vec<f64> = Vec::with_capacity(DEFAULT_ITERATOR_BUF_SIZE);
-    let mut buf = &self.data[page.offset..];
     let mut count = 0;
-    let mut start_iter = start;
 
-    for page in pages {
-      if page.t_max >= end {
-        break;
-      }
+    let page_iter = if rev {
+      pages.iter().rev()
+    } else {
+      pages.iter()
+    };
 
-      buf = context.get_page_data(buf, timestamps, values)?;
+    for page in page_iter {
+      let _ = context.get_page_data(self.data[page.offset], timestamps, values)?;
       if timestamps.is_empty() {
         // todo: raise an error
         break;
@@ -197,19 +173,16 @@ impl CompressedTimeseries {
       let mut start_idx = 0;
       let mut end_idx = timestamps.len();
       let stamps = &timestamps[0..];
-      // filter out timestamps out of range
-      for (i, ts) in stamps.iter().enumerate() {
-          if *ts >= start_iter {
-            start_idx = i;
-            break;
-          }
-      }
 
-      for i in (start_iter..stamps.len()).rev() {
-        if stamps[i] <= end {
-          end_idx = i;
-          break;
-        }
+      // filter out timestamps out of range
+      let start_idx = stamps
+        .iter()
+        .position(|&ts| ts >= start)
+        .unwrap_or(timestamps.len());
+      let end_idx = stamps.iter().rev().position(|&ts| ts <= end).unwrap_or(0);
+
+      if start_idx > end_idx {
+        continue;
       }
       // len
 
@@ -220,7 +193,6 @@ impl CompressedTimeseries {
       count += timestamps.len();
       timestamps.clear();
       values.clear();
-      start_iter = timestamps[timestamps.len() - 1];
     }
 
     visitor.finish()?;
@@ -319,17 +291,6 @@ impl CompressedTimeseries {
   }
 }
 
-pub struct BufferedWriter {
-  buf: Vec<u8>,
-  pub timestamps: Vec<i64>,
-  pub values: Vec<f64>,
-  v_compressor: Compressor<f64>,
-  t_compressor: Compressor<i64>,
-  count: usize,
-  max_points_per_page: usize,
-  last_value: f64,
-}
-
 fn get_value_compressor(values: &[f64]) -> Compressor<f64> {
   Compressor::<f64>::from_config(q_compress::auto_compressor_config(
     values,
@@ -411,13 +372,18 @@ pub(crate) fn compress_series(
   Ok(page_metas)
 }
 
+pub struct DataPage<'a> {
+    pub t_min: i64,
+    pub t_max: i64,
+    pub timestamps: &'a [i64],
+    pub values: &'a [f64],
+}
 pub struct CompressedChunkIterator<'a> {
-  parent: &'a CompressedTimeseries,
   context: DecompressorContext<'a>,
-  page_iter: Iterator<Item = &PageMetadata>,
-  values_iter: Iterator<Item = DataPoint>,
-  iter_ts: i64,
-  index: usize,
+  pages: &'a [PageMetadata],
+  timestamps: Vec<i64>,
+  values: Vec<f64>,
+  page_index: usize,
   start: i64,
   end: i64,
   rev: bool,
@@ -426,76 +392,111 @@ pub struct CompressedChunkIterator<'a> {
 const DEFAULT_ITERATOR_BUF_SIZE: usize = 32;
 
 impl CompressedChunkIterator<'_> {
-  pub fn new(compressed: &CompressedTimeseries, rev: bool) -> CompressedChunkIterator {
-    let page_iter = if rev {
-      compressed.pages.iter().rev()
+  pub fn new(
+    compressed: &CompressedTimeseries,
+    start: i64,
+    end: i64,
+    rev: bool
+  ) -> CompressedChunkIterator {
+    let iter = CompressedChunkIterator::new(compressed);
+    let mut pages = &compressed.pages;
+    let page_idx = pages
+      .iter()
+      .position(|page| page.t_min <= start)
+      .unwrap_or(pages.len() - 1);
+    let end_page_idx = pages
+      .iter()
+      .rev()
+      .position(|page| page.t_max <= end)
+      .unwrap_or(0);
+
+    let pages = if page_idx > end_page_idx {
+      pages = &[];
     } else {
-      compressed.pages.iter()
+      pages[page_idx..end_page_idx];
     };
+
+    let page_start_idx = if rev {
+      pages.len() - 1
+    } else {
+      0
+    };
+
     CompressedChunkIterator {
-      parent: compressed,
       context: DecompressorContext::new(&compressed.data),
-      page_iter,
-      index: 0,
-      start: 0,
-      iter_ts: 0,
-      end: i64::MAX,
+      pages,
+      page_index: page_start_idx,
+      start,
+      end,
+      timestamps: Vec::with_capacity(DEFAULT_ITERATOR_BUF_SIZE),
+      values: Vec::with_capacity(DEFAULT_ITERATOR_BUF_SIZE),
       rev: false,
     }
   }
 
-  pub fn with_range(
-    compressed: &CompressedTimeseries,
-    start: i64,
-    end: i64,
-  ) -> CompressedChunkIterator {
-    let iter = CompressedChunkIterator::new(compressed);
-    iter.set_range(start, end);
+  fn at_end(&self) -> bool {
+    if self.rev {
+      self.page_index == 0
+    } else {
+      self.page_index >= self.pages.len()
+    }
   }
 }
 
-impl Iterator for CompressedChunkIterator<'_> {
-  type Item = DataPoint;
+impl<'a> Iterator for CompressedChunkIterator<'a> {
+  type Item = DataPage<'a>;
 
   fn next(&mut self) -> Option<Self::Item> {
-    if self.page_index >= self.parent.pages.len() {
+    if self.page_index >= self.pages.len() {
       return None;
     }
-    if index >= self.context.timestamps.len() {
-      while let Some(page) = self.page_iter.next() {
-        self.context.get_page_data(page)?;
-        if self.context.timestamps.is_empty() {
-          return continue;
-        }
-        self.index = 0;
-        if self.context.timestamps.is_empty() {
-          return None;
-        }
+    let page = &self.pages[self.page_index];
+    self.context.get_page_data(page.offset)?;
+    let stamps = &self.timestamps[0..];
+
+    // filter out timestamps out of range
+    let start_idx = stamps
+        .iter()
+        .position(|&ts| ts >= start)
+        .unwrap_or(timestamps.len());
+    let end_idx = stamps.iter().rev().position(|&ts| ts <= end).unwrap_or(0);
+
+    let timestamps = &self.timestamps[start_idx..end_idx];
+    let values = &self.values[start_idx..end_idx];
+
+    let item = if self.rev {
+      DataPage {
+        t_min: page.t_min,
+        t_max: page.t_max,
+        timestamps: timestamps.reverse(),
+        values: values.reverse(),
       }
-      self.index = 0;
-      if count == 0 {
-        return None;
+    } else {
+      DataPage {
+        t_min: page.t_min,
+        t_max: page.t_max,
+        timestamps,
+        values,
       }
     }
-    let ts = self.context.timestamps[self.index];
-    let v = self.context.values[self.index];
-    self.index += 1;
-    Some(DataPoint { ts, v })
+
+    Some(item)
   }
 
   fn next_page(&self) -> Option<&PageMetadata> {
-    while self.page_index <= self.parent.pages.len() {
-      let page = &self.parent.pages[self.page_index];
-      if page.t_max < self.iter_ts {
-        self.page_index += 1;
-        continue;
-      }
-      if page.t_min > self.end {
+    if self.rev {
+      if self.page_index == 0 {
         return None;
       }
-      self.iter_ts = page.t_min;
-      return Some(page);
+      self.page_index -= 1;
+    } else {
+      if self.page_index >= self.parent.pages.len() {
+        return None;
+      }
+      self.page_index += 1;
     }
+    let page = &self.parent.pages[self.page_index];
+    return Some(page);
   }
 }
 
