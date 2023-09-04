@@ -46,3 +46,25 @@ pub fn handle_duplicate_sample(policy: DuplicatePolicy, old_sample: Sample, new_
     }
     DuplicateStatus::Err
 }
+
+pub fn trim_data(timestamps: &[i64], values: &[f64], start_ts: i64, end_ts: i64) -> (&[i64], &[f64]) {
+    let stamps = timestamps[0..];
+    let start_idx = stamps
+        .iter()
+        .position(|&ts| ts >= start)
+        .unwrap_or(timestamps.len());
+
+    let end_idx = stamps
+        .iter()
+        .rev()
+        .position(|&ts| ts <= end)
+        .unwrap_or(0);
+
+    if start_idx > end_idx {
+        return (&[], &[]);
+    }
+
+    let timestamps = &stamps[start_idx..end_idx];
+    let values = &values[start_idx..end_idx];
+    (timestamps, values)
+}

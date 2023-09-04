@@ -10,7 +10,6 @@ use crate::encoding::nearest_delta2::{
 };
 use serde::{Deserialize, Serialize};
 use crate::utils::error::TsldbError;
-use crate::utils::fastnum;
 use crate::utils::pool::get_pooled_buffer;
 
 type Result<T> = std::result::Result<T, TsldbError>;
@@ -298,14 +297,6 @@ pub fn unmarshal_int64_array(
                     src.len()
                 )));
             }
-            if first_value == 0 {
-                fastnum::append_int64_zeros(dst, items_count);
-                return Ok(());
-            }
-            if first_value == 1 {
-                fastnum::append_int64_ones(dst, items_count);
-                return Ok(());
-            }
             dst.extend(repeat(first_value).take(items_count));
             Ok(())
         }
@@ -386,14 +377,6 @@ pub fn ensure_non_decreasing_sequence(a: &mut [i64], v_min: i64, v_max: i64) {
 pub(crate) fn is_const(a: &[i64]) -> bool {
     if a.is_empty() {
         return false;
-    }
-    if fastnum::is_int64_zeros(a) {
-        // Fast path for array containing only zeros.
-        return true;
-    }
-    if fastnum::is_int64_ones(a) {
-        // Fast path for array containing only ones.
-        return true;
     }
     let v1 = a[0];
     return a.iter().all(|x| *x == v1);

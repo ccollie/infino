@@ -9,18 +9,20 @@ use crate::utils::custom_serde::rwlock_serde;
 use crate::utils::error::TsldbError;
 use crate::utils::sync::RwLock;
 
-#[derive(Debug, Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum TimeseriesChunk {
   Uncompressed(TimeSeriesBlock),
   Compressed(TimeSeriesBlockCompressed),
 }
 
 /// Represents a time series block.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TimeSeriesBlock {
   #[serde(with = "rwlock_serde")]
   /// Vector of data points, wrapped in a RwLock.
   data_points: RwLock<Vec<DataPoint>>,
+  pub(crate) timestamps: Vec<u64>,
+  pub(crate) values: Vec<f64>,
 }
 
 impl TimeSeriesBlock {
@@ -32,6 +34,8 @@ impl TimeSeriesBlock {
 
     Self {
       data_points: data_points_lock,
+      timestamps: vec![],
+      values: vec![],
     }
   }
 
@@ -41,6 +45,8 @@ impl TimeSeriesBlock {
 
     Self {
       data_points: data_points_lock,
+      timestamps: vec![],
+      values: vec![],
     }
   }
 
@@ -97,12 +103,24 @@ impl TimeSeriesBlock {
     retval
   }
 
-  pub fn remove_range(&mut self, start_time: u64, end_time: u64) {
+  pub fn remove_range(&mut self, start_time: u64, end_time: u64) -> usize {
     let mut data_points_lock = self.data_points.write().unwrap();
+    let count = data_points_lock.len();
     data_points_lock.retain(|dp| {
       let time = dp.get_time();
       time < start_time || time > end_time
     });
+    count - data_points_lock.len()
+  }
+
+  pub fn trim_to(&mut self, start_time: u64, end_time: u64) -> usize {
+    let mut data_points_lock = self.data_points.write().unwrap();
+    let count = data_points_lock.len();
+    data_points_lock.retain(|dp| {
+      let time = dp.get_time();
+      time >= start_time && time <= end_time
+    });
+    count - data_points_lock.len()
   }
 
 

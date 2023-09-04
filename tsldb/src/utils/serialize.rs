@@ -4,6 +4,15 @@ use std::io::Write;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+pub fn encode_usize(x: usize) -> [u8; 4] {
+  (x as u32).to_le_bytes()
+}
+
+pub fn decode_usize(bytes: &mut [u8]) -> (usize, &mut [u8]) {
+  let res = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+  (res, &mut bytes[4..])
+}
+
 /// Compress and write the specified map to the given file.
 pub fn write<T: Serialize>(to_write: &T, file_path: &str, sync_after_write: bool) {
   let input = serde_json::to_string(&to_write).unwrap();

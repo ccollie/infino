@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
 use log::{debug, error, info};
+use metricsql_engine::MetricName;
 
 use crate::index_manager::metadata::Metadata;
 use crate::log::log_message::LogMessage;

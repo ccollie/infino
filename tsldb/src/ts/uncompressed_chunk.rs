@@ -40,6 +40,7 @@ impl UncompressedChunk {
         let start_idx = self.timestamps.iter()
             .position(|&ts| ts >= start_ts)
             .unwrap_or(self.timestamps.len());
+
         let end_idx = self.timestamps.iter().rev()
             .position(|&ts| ts <= end_ts)
             .unwrap_or(0);
@@ -88,40 +89,32 @@ impl UncompressedChunk {
         // eliminate bounds checks
         let timestamps = &self.timestamps[0..];
 
-        while i < timestamps.len() {
-            sample_ts = timestamps[i];
-            if ts <= sample_ts {
-                break;
+        match timestamps.binary_search(|probe| probe.total_cmp(&sample.timestamp)) {
+            Ok(idx) => {
+                // update value in case timestamp exists
+                let current = Sample {
+                    timestamp: timestamps[idx],
+                    value: self.values[idx],
+                };
+                let cr = handleDuplicateSample(duplicatePolicy, &current, &sample);
+                if cr != CR_OK {
+                    return CR_ERR;
+                }
+                self.values[idx] = sample.value;
+                return CR_OK;
             }
-            i += 1;
-        }
-
-        // update value in case timestamp exists
-        if sample_ts != 0 && ts == sample_ts {
-            let current = Sample {
-                timestamp: sample_ts,
-                value: self.values[i],
-            };
-            let cr = handleDuplicateSample(duplicatePolicy, &current, &sample);
-            if cr != CR_OK {
-                return CR_ERR;
+            Err(idx) => {
+                if idx < timestamps.len() {
+                    self.timestamps.insert(idx, ts);
+                    self.values.insert(idx, sample.value);
+                } else {
+                    self.timestamps.push(ts);
+                    self.values.push(sample.value);
+                }
+                self.base_timestamp = ts;
+                self.size += f64::SIZE + i64::SIZE;
             }
-            self.values[i] = sample.value;
-            return CR_OK;
         }
-
-        if i == 0 {
-            self.base_timestamp = ts;
-        }
-
-        if i < timestamps.len() {
-            self.timestamps.insert(i, ts);
-            self.values.insert(i, sample.value);
-        } else {
-            self.timestamps.push(ts);
-            self.values.push(sample.value);
-        }
-        self.size += f64::SIZE + i64::SIZE;
 
         *size = 1;
         return CR_OK;

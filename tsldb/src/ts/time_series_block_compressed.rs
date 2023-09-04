@@ -145,7 +145,7 @@ mod tests {
   }
 
   #[test]
-  fn test_incresing_values() {
+  fn test_increasing_values() {
     // When time is monotonically increasing by the same difference, and value is constant,
     // we should see significant compression.
     let expected = TimeSeriesBlock::new();

@@ -98,7 +98,9 @@ pub struct TimeSeries {
   initial_times: RwLock<Vec<u64>>,
 
   pub total_samples: u64,
-  
+
+  pub first_timestamp: i64,
+
   pub last_timestamp: i64,
 
   pub last_value: f64,
@@ -116,13 +118,14 @@ impl TimeSeries {
       last_block: RwLock::new(TimeSeriesBlock::new()),
       initial_times: RwLock::new(Vec::new()),
       total_samples: 0,
+      first_timestamp: 0,
       last_timestamp: 0,
       last_value: f64::NAN,
     }
   }
 
   /// Append the given time and value to the time series.
-  pub fn append(&self, time: u64, value: f64) {
+  pub fn append(&mut self, time: u64, value: f64) {
     // Grab all the locks - as we may need to update any of these. In any scenario where all the locks need to captured,
     // the consistent sequence of capturing is important as otherwise it can lead to deadlock.
     let mut compressed_blocks_lock = self.compressed_blocks.write().unwrap();
@@ -133,13 +136,16 @@ impl TimeSeries {
     if last_block_lock.is_empty() {
       // First insertion in this time series.
       is_initial = true;
+      self.first_timestamp = time as i64;
+      self.last_timestamp = time as i64;
+      self.last_value = value;
     }
 
     // Try to append the time+value to the last block.
-    let retval = last_block_lock.append(time, value);
+    let ret_val = last_block_lock.append(time, value);
 
-    if retval.is_err()
-      && retval.err().unwrap() == TsldbError::CapacityFull(BLOCK_SIZE_FOR_TIME_SERIES)
+    if ret_val.is_err()
+      && ret_val.err().unwrap() == TsldbError::CapacityFull(BLOCK_SIZE_FOR_TIME_SERIES)
     {
       // The last block is full. So, compress it and append it time_series_block_compressed.
       let tsbc: TimeSeriesBlockCompressed =
@@ -157,6 +163,14 @@ impl TimeSeries {
     // If the is_initial flag is set, append the time to initial times vector.
     if is_initial {
       initial_times_lock.push(time);
+    }
+    if time < self.first_timestamp as u64 {
+      self.first_timestamp = time as i64;
+    }
+
+    if time > self.last_timestamp as u64 {
+      self.last_timestamp = time as i64;
+      self.last_value = value;
     }
   }
 
@@ -234,6 +248,119 @@ impl TimeSeries {
 
   pub fn delete_range(&mut self, start_ts: i64, end_ts: i64) {
 
+  }
+
+  pub fn overlaps(&self, start_ts: i64, end_ts: i64) -> bool {
+    self.last_timestamp >= start_ts && self.first_timestamp <= end_ts
+  }
+
+  pub fn trim(&mut self, start_ts: i64, end_ts: i64) {
+    if self.retention.as_millis() == 0 {
+      return;
+    }
+    let compressed_blocks = self.compressed_blocks.read().unwrap();
+    let last_block = self.last_block.read().unwrap();
+
+    let min_timestamp = self.get_min_timestamp();
+    let mut count = 0;
+    let mut deleted_count = 0;
+
+    for chunk in compressed_blocks.iter()
+        .take_while(|&block| block.first_timestamp().unwrap_or(0) < min_timestamp) {
+      count += 1;
+      deleted_count += chunk.len();
+    }
+
+    if count > 0 {
+        let _ = self.compressed_blocks.write().unwrap().drain(0..count);
+    }
+    // todo: trim partial compressed chunks
+    if last_block.first_timestamp().unwrap_or(0) < min_timestamp {
+      let _ = self.last_block.write().unwrap().remove_range(start_ts as u64, end_ts as u64);
+    }
+    // trim last block
+    deleted_count += last_block.trim_to(min_timestamp + 1, end_ts);
+
+    self.total_samples -= deleted_count as u64;
+
+  }
+
+  pub fn remove_range(&mut self, start_ts: i64, end_ts: i64) -> usize {
+
+    let mut deleted_samples = 0;
+    // todo: tinyvec
+    let mut indexes_to_delete = Vec::new();
+
+    let mut compressed_blocks = self.compressed_blocks.read().unwrap();
+    let last_block = self.last_block.read().unwrap();
+
+    for (idx, chunk) in compressed_blocks.iter_mut().enumerate() {
+      let chunk_first_ts = chunk.first_timestamp();
+      let chunk_last_ts = chunk.last_timestamp();
+
+      // We deleted the latest samples, no more chunks/samples to delete or cur chunk start_ts is
+      // larger than end_ts
+      if chunk.is_empty() || chunk.first_timestamp() > end_ts {
+        // Having empty chunk means the series is empty
+        break;
+      }
+
+      if chunk.last_timestamp() < start_ts {
+        continue;
+      }
+
+      let is_only_chunk =
+          (chunk.num_samples() + deleted_samples) == self.total_samples;
+
+      // Should we delete the entire chunk?
+      let ts_del_condition =
+          (chunk_first_ts >= start_ts && chunk_last_ts <= end_ts) &&
+              (!is_only_chunk); // We assume at least one allocated chunk in the series
+
+      if !ts_del_condition {
+        deleted_samples += chunk.remove_range(start_ts, end_ts)?;
+        continue;
+      }
+
+      let is_last_chunk_deleted = chunk == self.last_block;
+      deleted_samples += chunk.num_samples();
+      indexes_to_delete.push(idx);
+    }
+
+    self.total_samples -= deleted_samples;
+
+    for idx in indexes_to_delete.iter().rev() {
+      let _ = compressed_blocks.remove(*idx);
+    }
+
+    // Check if last timestamp deleted
+    if end_ts >= self.last_timestamp && start_ts <= self.last_timestamp {
+      let current_chunk = self.last_chunk;
+      match self.chunks.iter().last() {
+        Some(chunk) => {
+          self.last_timestamp = chunk.last_timestamp();
+          self.last_value = chunk.last_value();
+        }
+        None => {
+          self.last_timestamp = 0;
+          self.last_value = f64::NAN;
+        }
+      }
+    }
+
+    // CompactionDelRange(series, start_ts, end_ts, last_ts_before_deletion);
+
+    return deleted_samples
+  }
+
+  fn get_min_timestamp(&self) -> i64 {
+    let last_ts = self.last_timestamp;
+    let retention_millis = self.retention.as_millis() as i64;
+    if self.last_timestamp > retention_millis {
+      self.last_timestamp - retention_millis
+    } else {
+      0
+    }
   }
 }
 
